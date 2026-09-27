@@ -63,13 +63,59 @@ function rendererPath(type) {
   return path.join(skillRoot, 'renderers', type, `render-${type}.mjs`);
 }
 
+function readPipeFile(filePath) {
+  try {
+    return fs.readFileSync(filePath, 'utf8');
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    return '';
+  }
+}
+
 function runNode(args, options = {}) {
-  return spawnSync(process.execPath, args, {
-    cwd: options.cwd || process.cwd(),
-    encoding: 'utf8',
-    stdio: options.stdio || 'inherit',
-    env: options.env ? { ...process.env, ...options.env } : process.env,
-  });
+  const cwd = options.cwd || process.cwd();
+  const env = options.env ? { ...process.env, ...options.env } : process.env;
+  if (options.stdio !== 'pipe') {
+    return spawnSync(process.execPath, args, {
+      cwd,
+      encoding: 'utf8',
+      stdio: options.stdio || 'inherit',
+      env,
+    });
+  }
+  // A piped caller parses the child's receipt after it exits, so the whole
+  // report has to survive. spawnSync buffers pipes and kills the child past its
+  // 1 MiB maxBuffer default, which truncates a large composition receipt mid-
+  // JSON and turns the non-zero status into "Final artifact check failed." —
+  // validate reporting a layout the checker itself passed (#590). Hand the child
+  // files instead of pipes: the size the caller can consume stops being a limit
+  // the CLI can hit, and the streams stay separate the way the diagnostics need.
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'archify-pipe-'));
+  const stdoutPath = path.join(directory, 'stdout');
+  const stderrPath = path.join(directory, 'stderr');
+  const stdoutDescriptor = fs.openSync(stdoutPath, 'w');
+  const stderrDescriptor = fs.openSync(stderrPath, 'w');
+  let result;
+  try {
+    result = spawnSync(process.execPath, args, {
+      cwd,
+      encoding: 'utf8',
+      stdio: ['ignore', stdoutDescriptor, stderrDescriptor],
+      env,
+    });
+  } finally {
+    fs.closeSync(stdoutDescriptor);
+    fs.closeSync(stderrDescriptor);
+  }
+  try {
+    return {
+      ...result,
+      stdout: readPipeFile(stdoutPath),
+      stderr: readPipeFile(stderrPath),
+    };
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 }
 
 function extractQualityArgs(args) {

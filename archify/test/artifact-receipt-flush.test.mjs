@@ -64,8 +64,7 @@ for (const profile of ['standard', 'showcase']) {
   });
 }
 
-function denseArchitecture() {
-  const count = 20;
+function denseArchitecture(count = 20) {
   const components = [];
   const connections = [];
   for (let index = 0; index < count; index += 1) {
@@ -121,6 +120,65 @@ for (const command of ['validate', 'deliver', 'compare']) {
         assert.equal(receipt.completeness, 'complete');
         assert.equal(receipt.proofLevel, 'authored');
       }
+    }
+  });
+}
+
+// The 64 KiB fixtures above are a sixteenth of the buffer the CLI puts on its own
+// children, so none of them could catch #590: `validate` runs the artifact checker
+// through spawnSync, whose 1 MiB default maxBuffer truncates a bigger receipt, and
+// the CLI then reports a layout the checker passed as a failed artifact check.
+const SPAWN_SYNC_PIPE_BYTES = 1024 * 1024;
+let oversizedReference;
+function oversizedArtifact() {
+  if (oversizedReference) return oversizedReference;
+  const input = path.join(tmp, 'oversized.architecture.json');
+  fs.writeFileSync(input, JSON.stringify(denseArchitecture(60)));
+  const rendered = run(cli, ['render', 'architecture', input, path.join(tmp, 'oversized.html')]);
+  assert.equal(rendered.status, 0, rendered.stderr || rendered.stdout);
+  // Writing the checker's stdout to a file is the control that no pipe buffer
+  // can distort: whatever survives here is the report the CLI has to consume.
+  const reportPath = path.join(tmp, 'oversized.checker.json');
+  const descriptor = fs.openSync(reportPath, 'w');
+  let checkerRun;
+  try {
+    checkerRun = run(checker, [path.join(tmp, 'oversized.html')], { stdio: ['ignore', descriptor, 'pipe'] });
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  assert.equal(checkerRun.status, 0, checkerRun.stderr);
+  const report = fs.readFileSync(reportPath, 'utf8');
+  oversizedReference = { input, report, receipt: JSON.parse(report) };
+  return oversizedReference;
+}
+
+for (const command of ['validate', 'deliver', 'compare']) {
+  test(`${command} consumes a complete artifact receipt past the CLI's own pipe buffer (#590)`, () => {
+    const { input, report, receipt } = oversizedArtifact();
+    assert.ok(
+      Buffer.byteLength(report) > SPAWN_SYNC_PIPE_BYTES,
+      `the fixture must exceed the buffer the CLI used to put on its children (${Buffer.byteLength(report)} bytes)`,
+    );
+    assert.ok(receipt.ok, 'the same layout must pass when the checker runs on its own');
+
+    const output = path.join(tmp, `${command}-oversized.html`);
+    const args = command === 'validate' ? [input]
+      : command === 'deliver' ? [input, output]
+        : [input, input, output];
+    // The harness has to out-size what the CLI used to: `validate` echoes the
+    // whole composition receipt, so reading it back through this spawnSync needs
+    // a wider buffer than 1 MiB as well.
+    const result = run(cli, [command, 'architecture', ...args, '--json'], { maxBuffer: 64 * 1024 * 1024 });
+    assert.equal(result.status, 0, result.stdout || result.stderr);
+    const cliReceipt = JSON.parse(result.stdout);
+    assert.equal(cliReceipt.ok, true, `${command} turned a passing layout into a failure: ${result.stdout}`);
+    assert.equal(result.stderr, '');
+    if (command === 'validate') {
+      // Every warning has to reach the CLI's receipt: a truncated report parses
+      // as fewer entries even when it happens to parse at all.
+      assert.ok(Buffer.byteLength(result.stdout) > SPAWN_SYNC_PIPE_BYTES);
+      assert.deepEqual(cliReceipt.composition.summary, receipt.composition.summary);
+      assert.deepEqual(cliReceipt.composition.issues, receipt.composition.issues);
     }
   });
 }

@@ -7,6 +7,7 @@ All notable changes are documented here. Format loosely follows [Keep a Changelo
 > Development identity: `v2.17.0-dev.1`. Not a stable release.
 
 ### Fixed
+- **Complete child receipts past the CLI's own pipe buffer (#590).** `validate`, `deliver` and `compare` now read their renderer and artifact-checker children through files instead of pipes, so a composition receipt larger than Node's 1 MiB `spawnSync` default no longer arrives truncated — that truncation made the CLI report a layout the checker itself passed as "Final artifact check failed." with no supported fix.
 - **Architecture Delta baseline arrowheads (#433).** Removed and rerouted baseline relationships retain their marker definitions in the composed Delta SVG, preserving their authored direction alongside current relationships.
 - **Compare rollback recovery (#438).** If restoring a previous output fails, compare preserves its recovery directory and reports backup-to-target paths instead of deleting the remaining backups during cleanup.
 - **固定提交的来源校验 (#420)。** 校验忽略本地 Git replacement refs，始终读取指定提交的原始对象，避免替换后的文件或行范围造成误接受或误拒绝；保留原有来源链接、诊断与用户 Git 配置。
